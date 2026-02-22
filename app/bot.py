@@ -67,17 +67,40 @@ async def bind_button(callback: CallbackQuery):
     await callback.answer()
 
 
+async def _bind_chat_from_forward(message: Message, chat_id: int, title: str | None):
+    bind_chat(chat_id, title)
+    logger.info("Chat bound: %s (%s)", title, chat_id)
+    await message.answer(f"Готово. Привязал чат: {title or chat_id} ({chat_id})")
+
+
 @dp.message(F.forward_from_chat)
-async def bind_by_forward(message: Message):
+async def bind_by_forward_legacy(message: Message):
     if message.chat.type != ChatType.PRIVATE:
         return
     src = message.forward_from_chat
     if src.type not in {ChatType.GROUP, ChatType.SUPERGROUP}:
         await message.answer("Нужен forward именно из группы.")
         return
-    bind_chat(src.id, src.title)
-    logger.info("Chat bound: %s (%s)", src.title, src.id)
-    await message.answer(f"Готово. Привязал чат: {src.title} ({src.id})")
+    await _bind_chat_from_forward(message, src.id, src.title)
+
+
+@dp.message(F.chat.type == ChatType.PRIVATE)
+async def bind_by_forward_new(message: Message):
+    origin = getattr(message, "forward_origin", None)
+    if not origin:
+        return
+
+    src_chat = getattr(origin, "chat", None)
+    if src_chat:
+        if src_chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}:
+            await _bind_chat_from_forward(message, src_chat.id, src_chat.title)
+            return
+
+    await message.answer(
+        "Не вижу данных о чате в forward.\n"
+        "Проверь, что пересылаешь сообщение ИМЕННО из группы, где бот админ,\n"
+        "и что Telegram не скрывает источник пересылки."
+    )
 
 
 @dp.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
