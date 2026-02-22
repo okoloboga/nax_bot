@@ -12,7 +12,7 @@ from aiogram.types import (
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from storage import bind_chat, is_bound, log_message, load_chats, read_last_24h
+from storage import bind_chat, is_bound, log_message, load_chats, read_last_24h, read_last_n
 from comet import CometClient
 from config import (
     BOT_TOKEN,
@@ -221,34 +221,62 @@ async def group_listener(message: Message):
         user = message.from_user.full_name if message.from_user else "unknown"
         log_message(message.chat.id, user, text)
 
-    if text.startswith("/nax"):
-        now_ts = datetime.now().timestamp()
-        last = LAST_CALL.get(message.chat.id, 0)
-        if now_ts - last < BOT_COOLDOWN_SECONDS:
-            wait_s = int(BOT_COOLDOWN_SECONDS - (now_ts - last))
-            logger.info("Cooldown hit in chat %s, wait=%ss", message.chat.id, wait_s)
-            await message.reply(f"Остынь. Следующий вызов через {wait_s} сек.")
-            return
-        LAST_CALL[message.chat.id] = now_ts
+    is_nax = text.startswith("/nax")
+    is_reply_to_bot = (
+        message.reply_to_message is not None
+        and message.reply_to_message.from_user is not None
+        and message.reply_to_message.from_user.id == bot.id
+        and bool(text)
+    )
 
+    if not is_nax and not is_reply_to_bot:
+        return
+
+    now_ts = datetime.now().timestamp()
+    last = LAST_CALL.get(message.chat.id, 0)
+    if now_ts - last < BOT_COOLDOWN_SECONDS:
+        wait_s = int(BOT_COOLDOWN_SECONDS - (now_ts - last))
+        logger.info("Cooldown hit in chat %s, wait=%ss", message.chat.id, wait_s)
+        await message.reply(f"Остынь. Следующий вызов через {wait_s} сек.")
+        return
+    LAST_CALL[message.chat.id] = now_ts
+
+    recent = read_last_n(message.chat.id, n=10)
+    context_block = ""
+    if recent:
+        lines = "\n".join(f"  {r['user']}: {r['text']}" for r in recent)
+        context_block = f"Последние сообщения в чате:\n{lines}\n\n"
+
+    if is_nax:
         target = text.replace("/nax", "", 1).strip()
         if not target and message.reply_to_message:
             target = message.reply_to_message.text or message.reply_to_message.caption or ""
         if not target:
             await message.reply("Дай текст после /nax или ответь реплаем на сообщение.")
             return
-        prompt = f"Сообщение из чата:\n{target}\n\nОтветь в стиле Порфирия."
-        try:
-            logger.info(
-                "/nax called in chat %s by user %s",
-                message.chat.id,
-                message.from_user.id if message.from_user else "unknown",
-            )
-            answer = await comet.chat(SYSTEM_PROMPT, prompt)
-            await message.reply(answer[:4000])
-        except Exception as e:
-            logger.exception("/nax failed in chat %s", message.chat.id)
-            await message.reply(f"Что-то пошло не так: {e}")
+        prompt = f"{context_block}Сообщение из чата:\n{target}\n\nОтветь в стиле Порфирия."
+    else:
+        bot_msg = message.reply_to_message.text or message.reply_to_message.caption or ""
+        prompt = (
+            f"{context_block}"
+            f"Предыдущее сообщение Порфирия:\n{bot_msg}\n\n"
+            f"Пользователь отвечает:\n{text}\n\n"
+            "Продолжи в стиле Порфирия."
+        )
+
+    try:
+        logger.info(
+            "reply triggered in chat %s by user %s (nax=%s, reply_to_bot=%s)",
+            message.chat.id,
+            message.from_user.id if message.from_user else "unknown",
+            is_nax,
+            is_reply_to_bot,
+        )
+        answer = await comet.chat(SYSTEM_PROMPT, prompt)
+        await message.reply(answer[:4000])
+    except Exception as e:
+        logger.exception("reply handler failed in chat %s", message.chat.id)
+        await message.reply(f"Что-то пошло не так: {e}")
 
 
 # ---------------------------------------------------------------------------

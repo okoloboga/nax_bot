@@ -39,6 +39,19 @@ def log_message(chat_id: int, user: str, text: str) -> None:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def read_last_n(chat_id: int, n: int = 10) -> list[dict]:
+    if not LOG_FILE.exists():
+        return []
+    out = []
+    for line in LOG_FILE.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if row.get("chat_id") == chat_id:
+            out.append(row)
+    return out[-n:]
+
+
 def read_last_24h(chat_id: int) -> list[dict]:
     if not LOG_FILE.exists():
         return []
