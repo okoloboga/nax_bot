@@ -6,7 +6,10 @@ from zoneinfo import ZoneInfo
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ChatType
 from aiogram.filters import Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import (
+    Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery,
+    ChatMemberUpdated,
+)
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from storage import bind_chat, is_bound, log_message, load_chats, read_last_24h
@@ -50,26 +53,86 @@ SYSTEM_PROMPT = (
 LAST_CALL: dict[int, float] = {}
 
 
+# ---------------------------------------------------------------------------
+# Личка — команды
+# ---------------------------------------------------------------------------
+
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="Привязать чат", callback_data="bind_chat")
     ]])
     await message.answer(
-        "Жми кнопку, потом перешли мне любое сообщение из нужной группы, где я уже админ.\nКоманда вызова в чате: /nax",
+        "Добавь меня в группу как администратора, затем напиши /bind прямо в той группе.\n"
+        "Или нажми кнопку и перешли сообщение из группы сюда (работает только если "
+        "у отправителя открытая пересылка).\n\nКоманда вызова в чате: /nax",
         reply_markup=kb,
     )
 
 
 @dp.callback_query(F.data == "bind_chat")
 async def bind_button(callback: CallbackQuery):
-    await callback.message.answer("Ок, теперь перешли мне сообщение из группы (forward).")
+    await callback.message.answer(
+        "Перешли мне любое сообщение из группы.\n"
+        "Если не работает — напиши /bind прямо в той группе."
+    )
     await callback.answer()
 
 
+# ---------------------------------------------------------------------------
+# Авто-привязка при добавлении бота в группу
+# ---------------------------------------------------------------------------
+
+@dp.my_chat_member()
+async def on_my_chat_member(event: ChatMemberUpdated):
+    chat = event.chat
+    if chat.type not in {ChatType.GROUP, ChatType.SUPERGROUP}:
+        return
+    new_status = event.new_chat_member.status
+    logger.info(
+        "my_chat_member: chat=%s (%s) new_status=%s",
+        chat.id, chat.title, new_status,
+    )
+    if new_status in {"member", "administrator"}:
+        if ALLOWED_CHAT_IDS and chat.id not in ALLOWED_CHAT_IDS:
+            logger.warning("my_chat_member: chat %s not in ALLOWED_CHAT_IDS, skip", chat.id)
+            return
+        bind_chat(chat.id, chat.title)
+        logger.info("Auto-bound chat %s (%s) via my_chat_member", chat.id, chat.title)
+        try:
+            await bot.send_message(
+                chat.id,
+                f"Привязан. chat_id={chat.id}. Зови через /nax."
+            )
+        except Exception:
+            logger.exception("Failed to send welcome to chat %s", chat.id)
+    elif new_status in {"left", "kicked", "restricted"}:
+        logger.info("Bot removed from chat %s (%s)", chat.id, chat.title)
+
+
+# ---------------------------------------------------------------------------
+# Привязка через /bind прямо в группе
+# ---------------------------------------------------------------------------
+
+@dp.message(Command("bind"), F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
+async def cmd_bind_in_group(message: Message):
+    chat = message.chat
+    logger.info("cmd_bind_in_group: chat=%s (%s)", chat.id, chat.title)
+    if ALLOWED_CHAT_IDS and chat.id not in ALLOWED_CHAT_IDS:
+        logger.warning("cmd_bind_in_group: chat %s not in ALLOWED_CHAT_IDS", chat.id)
+        await message.reply("Этот чат не в списке разрешённых.")
+        return
+    bind_chat(chat.id, chat.title)
+    await message.reply(f"Привязан. chat_id={chat.id}. Зови через /nax.")
+
+
+# ---------------------------------------------------------------------------
+# Привязка через forward в личке (legacy + новый API)
+# ---------------------------------------------------------------------------
+
 async def _bind_chat_from_forward(message: Message, chat_id: int, title: str | None):
     bind_chat(chat_id, title)
-    logger.info("Chat bound: %s (%s)", title, chat_id)
+    logger.info("Chat bound via forward: %s (%s)", title, chat_id)
     await message.answer(f"Готово. Привязал чат: {title or chat_id} ({chat_id})")
 
 
@@ -103,7 +166,6 @@ async def bind_by_forward_new(message: Message):
             (message.text or "")[:80],
         )
         if not origin:
-            logger.info("bind_by_forward_new: no forward_origin, ignoring")
             return
 
         src_chat = getattr(origin, "chat", None)
@@ -112,17 +174,19 @@ async def bind_by_forward_new(message: Message):
             getattr(src_chat, "id", None),
             getattr(src_chat, "type", None),
         )
-        if src_chat:
-            if src_chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}:
-                await _bind_chat_from_forward(message, src_chat.id, src_chat.title)
-                return
-            logger.warning("bind_by_forward_new: src_chat.type=%s — not a group", src_chat.type)
+        if src_chat and src_chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}:
+            await _bind_chat_from_forward(message, src_chat.id, src_chat.title)
+            return
 
+        # MessageOriginHiddenUser или MessageOriginUser — chat_id не доступен
+        logger.warning(
+            "bind_by_forward_new: origin_type=%s — cannot extract chat_id",
+            type(origin).__name__,
+        )
         await message.answer(
-            "Не вижу данных о чате в forward.\n"
-            f"Тип origin: {type(origin).__name__}, chat: {src_chat}\n"
-            "Проверь, что пересылаешь сообщение ИМЕННО из группы, где бот админ,\n"
-            "и что Telegram не скрывает источник пересылки."
+            f"Не могу получить chat_id из этого forward (тип: {type(origin).__name__}).\n"
+            "Telegram скрывает источник из-за настроек приватности отправителя.\n\n"
+            "Используй команду /bind прямо в группе — это надёжнее."
         )
     except Exception:
         logger.exception("bind_by_forward_new failed")
@@ -131,16 +195,19 @@ async def bind_by_forward_new(message: Message):
 
 @dp.message(F.chat.type == ChatType.PRIVATE)
 async def private_fallback(message: Message):
-    """Логирует всё, что не поймали предыдущие хэндлеры в личке."""
     logger.info(
-        "private_fallback: text=%r has_forward_origin=%s has_forward_from_chat=%s "
-        "forward_origin_type=%s",
+        "private_fallback (unhandled): text=%r has_forward_origin=%s "
+        "has_forward_from_chat=%s forward_origin_type=%s",
         (message.text or "")[:80],
         getattr(message, "forward_origin", None) is not None,
         message.forward_from_chat is not None,
         type(getattr(message, "forward_origin", None)).__name__,
     )
 
+
+# ---------------------------------------------------------------------------
+# Групповой слушатель — /nax и логирование
+# ---------------------------------------------------------------------------
 
 @dp.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
 async def group_listener(message: Message):
@@ -172,13 +239,21 @@ async def group_listener(message: Message):
             return
         prompt = f"Сообщение из чата:\n{target}\n\nОтветь в стиле Порфирия."
         try:
-            logger.info("/nax called in chat %s by user %s", message.chat.id, message.from_user.id if message.from_user else "unknown")
+            logger.info(
+                "/nax called in chat %s by user %s",
+                message.chat.id,
+                message.from_user.id if message.from_user else "unknown",
+            )
             answer = await comet.chat(SYSTEM_PROMPT, prompt)
             await message.reply(answer[:4000])
         except Exception as e:
             logger.exception("/nax failed in chat %s", message.chat.id)
             await message.reply(f"Что-то пошло не так: {e}")
 
+
+# ---------------------------------------------------------------------------
+# Ежедневный дайджест
+# ---------------------------------------------------------------------------
 
 async def daily_digest():
     chats = load_chats()
@@ -205,13 +280,17 @@ async def daily_digest():
             await bot.send_message(cid, f"Не смог собрать разбор: {e}")
 
 
+# ---------------------------------------------------------------------------
+# Запуск
+# ---------------------------------------------------------------------------
+
 async def main():
     logger.info("Starting Porfiriy bot...")
     scheduler = AsyncIOScheduler(timezone=TZ)
     scheduler.add_job(daily_digest, "cron", hour=18, minute=0)
     scheduler.start()
     logger.info("Scheduler started (daily digest at 18:00 %s)", TZ)
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, allowed_updates=["message", "callback_query", "my_chat_member"])
 
 
 if __name__ == "__main__":
