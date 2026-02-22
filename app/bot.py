@@ -77,29 +77,68 @@ async def _bind_chat_from_forward(message: Message, chat_id: int, title: str | N
 async def bind_by_forward_legacy(message: Message):
     if message.chat.type != ChatType.PRIVATE:
         return
-    src = message.forward_from_chat
-    if src.type not in {ChatType.GROUP, ChatType.SUPERGROUP}:
-        await message.answer("Нужен forward именно из группы.")
-        return
-    await _bind_chat_from_forward(message, src.id, src.title)
+    try:
+        src = message.forward_from_chat
+        logger.info(
+            "bind_by_forward_legacy: src.id=%s src.type=%s src.title=%r",
+            src.id, src.type, src.title,
+        )
+        if src.type not in {ChatType.GROUP, ChatType.SUPERGROUP}:
+            await message.answer("Нужен forward именно из группы.")
+            return
+        await _bind_chat_from_forward(message, src.id, src.title)
+    except Exception:
+        logger.exception("bind_by_forward_legacy failed")
+        await message.answer("Ошибка при обработке forward (legacy). Смотри логи.")
 
 
 @dp.message(F.chat.type == ChatType.PRIVATE)
 async def bind_by_forward_new(message: Message):
-    origin = getattr(message, "forward_origin", None)
-    if not origin:
-        return
-
-    src_chat = getattr(origin, "chat", None)
-    if src_chat:
-        if src_chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}:
-            await _bind_chat_from_forward(message, src_chat.id, src_chat.title)
+    try:
+        origin = getattr(message, "forward_origin", None)
+        logger.info(
+            "bind_by_forward_new: has_origin=%s origin_type=%s msg_text=%r",
+            origin is not None,
+            type(origin).__name__ if origin else "—",
+            (message.text or "")[:80],
+        )
+        if not origin:
+            logger.info("bind_by_forward_new: no forward_origin, ignoring")
             return
 
-    await message.answer(
-        "Не вижу данных о чате в forward.\n"
-        "Проверь, что пересылаешь сообщение ИМЕННО из группы, где бот админ,\n"
-        "и что Telegram не скрывает источник пересылки."
+        src_chat = getattr(origin, "chat", None)
+        logger.info(
+            "bind_by_forward_new: src_chat=%s src_chat_type=%s",
+            getattr(src_chat, "id", None),
+            getattr(src_chat, "type", None),
+        )
+        if src_chat:
+            if src_chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}:
+                await _bind_chat_from_forward(message, src_chat.id, src_chat.title)
+                return
+            logger.warning("bind_by_forward_new: src_chat.type=%s — not a group", src_chat.type)
+
+        await message.answer(
+            "Не вижу данных о чате в forward.\n"
+            f"Тип origin: {type(origin).__name__}, chat: {src_chat}\n"
+            "Проверь, что пересылаешь сообщение ИМЕННО из группы, где бот админ,\n"
+            "и что Telegram не скрывает источник пересылки."
+        )
+    except Exception:
+        logger.exception("bind_by_forward_new failed")
+        await message.answer("Ошибка при обработке forward. Смотри логи.")
+
+
+@dp.message(F.chat.type == ChatType.PRIVATE)
+async def private_fallback(message: Message):
+    """Логирует всё, что не поймали предыдущие хэндлеры в личке."""
+    logger.info(
+        "private_fallback: text=%r has_forward_origin=%s has_forward_from_chat=%s "
+        "forward_origin_type=%s",
+        (message.text or "")[:80],
+        getattr(message, "forward_origin", None) is not None,
+        message.forward_from_chat is not None,
+        type(getattr(message, "forward_origin", None)).__name__,
     )
 
 
