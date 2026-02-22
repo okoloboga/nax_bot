@@ -1,5 +1,4 @@
 import asyncio
-import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -8,15 +7,19 @@ from aiogram.enums import ChatType
 from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from dotenv import load_dotenv
 
 from storage import bind_chat, is_bound, log_message, load_chats, read_last_24h
 from comet import CometClient
+from config import (
+    BOT_TOKEN,
+    COMET_API_TOKEN,
+    TZ as TZ_NAME,
+    ALLOWED_CHAT_IDS,
+    BOT_COOLDOWN_SECONDS,
+    HUMOR_MODE,
+)
 
-load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-COMET_API_TOKEN = os.getenv("COMET_API_TOKEN", "")
-TZ = ZoneInfo(os.getenv("TZ", "Europe/Moscow"))
+TZ = ZoneInfo(TZ_NAME)
 
 if not BOT_TOKEN or not COMET_API_TOKEN:
     raise RuntimeError("Set BOT_TOKEN and COMET_API_TOKEN in .env")
@@ -25,11 +28,19 @@ bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 comet = CometClient(COMET_API_TOKEN)
 
+MODE_PROMPTS = {
+    "soft": "Лёгкий сарказм, больше иронии, меньше жести.",
+    "hard": "Черный юмор, цинизм, жёсткие панчи, но без травли по защищённым признакам.",
+    "insane": "Максимально безумный стендап-режим, абсурд и огонь, но без запрещёнки.",
+}
+
 SYSTEM_PROMPT = (
-    "Ты Порфирий — черный юмор, сарказм, цинизм. Пиши кратко и смешно. "
-    "Никаких призывов к насилию, экстремизму, доксингу, травле по защищённым признакам. "
-    "Подкалывай по-дружески, как стендап-комик в закрытом чате."
+    "Ты Порфирий — комик-циник для закрытого чата. "
+    f"Режим: {MODE_PROMPTS.get(HUMOR_MODE, MODE_PROMPTS['hard'])} "
+    "Пиши кратко, дерзко, смешно. Никаких призывов к насилию, экстремизму, доксингу."
 )
+
+LAST_CALL: dict[int, float] = {}
 
 
 @dp.message(Command("start"))
@@ -63,6 +74,8 @@ async def bind_by_forward(message: Message):
 
 @dp.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
 async def group_listener(message: Message):
+    if ALLOWED_CHAT_IDS and message.chat.id not in ALLOWED_CHAT_IDS:
+        return
     if not is_bound(message.chat.id):
         return
 
@@ -72,6 +85,13 @@ async def group_listener(message: Message):
         log_message(message.chat.id, user, text)
 
     if text.startswith("/bot"):
+        now_ts = datetime.now().timestamp()
+        last = LAST_CALL.get(message.chat.id, 0)
+        if now_ts - last < BOT_COOLDOWN_SECONDS:
+            await message.reply(f"Остынь. Следующий вызов через {int(BOT_COOLDOWN_SECONDS - (now_ts - last))} сек.")
+            return
+        LAST_CALL[message.chat.id] = now_ts
+
         target = text.replace("/bot", "", 1).strip()
         if not target and message.reply_to_message:
             target = message.reply_to_message.text or message.reply_to_message.caption or ""
@@ -90,6 +110,8 @@ async def daily_digest():
     chats = load_chats()
     for cid_str, meta in chats.items():
         cid = int(cid_str)
+        if ALLOWED_CHAT_IDS and cid not in ALLOWED_CHAT_IDS:
+            continue
         rows = read_last_24h(cid)
         if not rows:
             continue
