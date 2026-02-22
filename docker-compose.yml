@@ -1,0 +1,10 @@
+services:
+  porfiriy:
+    build: .
+    container_name: porfiriy-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    command: python app/bot.py
