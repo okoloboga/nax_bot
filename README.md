@@ -1,24 +1,30 @@
-# Porfiriy Bot
+# Porfiriy Telegram Bot
 
-Юмористический Telegram-бот для закрытых групп на aiogram + CometAPI.
+Юмористический бот для закрытой группы на aiogram + CometAPI (ChatGPT 5.1).
 
 ## Что умеет
-- Реагирует на `/bot` в привязанной группе
-- Можно отвечать на сообщение реплаем (`/bot` в reply)
-- Пишет дневной разбор чата в 18:00 (Europe/Moscow)
-- Привязка чата через кнопку в личке (`/start` -> `Привязать чат` -> forward из группы)
+- Ответ по команде `/bot` (текст после команды или reply-сообщение).
+- Привязка группы через inline-кнопку в личке (`/start` -> "Привязать чат" -> forward сообщения из группы).
+- Раз в сутки в 18:00 (Europe/Moscow по умолчанию) делает разбор чата за 24 часа.
+- Локально сохраняет логи сообщений и список привязанных чатов.
 
-## Обязательные переменные `.env`
+## Переменные `.env`
+Обязательные:
 - `BOT_TOKEN=`
 - `COMET_API_TOKEN=`
 
-## Опционально
+Опциональные:
 - `TZ=Europe/Moscow`
-- `ALLOWED_CHAT_IDS=-100123,-100456`
+- `ALLOWED_CHAT_IDS=` (через запятую, например `-100123,-100456`)
 - `BOT_COOLDOWN_SECONDS=20`
 - `HUMOR_MODE=hard` (`soft|hard|insane`)
 
 ## Запуск
 ```bash
+cd /home/claw/porfiriy
 docker compose up -d --build
 ```
+
+## Данные
+- `data/chats.json` — привязанные чаты
+- `data/messages.jsonl` — лог сообщений
