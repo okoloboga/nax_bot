@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -23,6 +24,12 @@ TZ = ZoneInfo(TZ_NAME)
 
 if not BOT_TOKEN or not COMET_API_TOKEN:
     raise RuntimeError("Set BOT_TOKEN and COMET_API_TOKEN in .env")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+logger = logging.getLogger("porfiriy")
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
@@ -49,7 +56,7 @@ async def cmd_start(message: Message):
         InlineKeyboardButton(text="Привязать чат", callback_data="bind_chat")
     ]])
     await message.answer(
-        "Жми кнопку, потом перешли мне любое сообщение из нужной группы, где я уже админ.",
+        "Жми кнопку, потом перешли мне любое сообщение из нужной группы, где я уже админ.\nКоманда вызова в чате: /nax",
         reply_markup=kb,
     )
 
@@ -69,6 +76,7 @@ async def bind_by_forward(message: Message):
         await message.answer("Нужен forward именно из группы.")
         return
     bind_chat(src.id, src.title)
+    logger.info("Chat bound: %s (%s)", src.title, src.id)
     await message.answer(f"Готово. Привязал чат: {src.title} ({src.id})")
 
 
@@ -84,25 +92,29 @@ async def group_listener(message: Message):
         user = message.from_user.full_name if message.from_user else "unknown"
         log_message(message.chat.id, user, text)
 
-    if text.startswith("/bot"):
+    if text.startswith("/nax"):
         now_ts = datetime.now().timestamp()
         last = LAST_CALL.get(message.chat.id, 0)
         if now_ts - last < BOT_COOLDOWN_SECONDS:
-            await message.reply(f"Остынь. Следующий вызов через {int(BOT_COOLDOWN_SECONDS - (now_ts - last))} сек.")
+            wait_s = int(BOT_COOLDOWN_SECONDS - (now_ts - last))
+            logger.info("Cooldown hit in chat %s, wait=%ss", message.chat.id, wait_s)
+            await message.reply(f"Остынь. Следующий вызов через {wait_s} сек.")
             return
         LAST_CALL[message.chat.id] = now_ts
 
-        target = text.replace("/bot", "", 1).strip()
+        target = text.replace("/nax", "", 1).strip()
         if not target and message.reply_to_message:
             target = message.reply_to_message.text or message.reply_to_message.caption or ""
         if not target:
-            await message.reply("Дай текст после /bot или ответь реплаем на сообщение.")
+            await message.reply("Дай текст после /nax или ответь реплаем на сообщение.")
             return
         prompt = f"Сообщение из чата:\n{target}\n\nОтветь в стиле Порфирия."
         try:
+            logger.info("/nax called in chat %s by user %s", message.chat.id, message.from_user.id if message.from_user else "unknown")
             answer = await comet.chat(SYSTEM_PROMPT, prompt)
             await message.reply(answer[:4000])
         except Exception as e:
+            logger.exception("/nax failed in chat %s", message.chat.id)
             await message.reply(f"Что-то пошло не так: {e}")
 
 
@@ -123,16 +135,20 @@ async def daily_digest():
             f"Лог за сутки:\n{sample}"
         )
         try:
+            logger.info("Daily digest for chat %s (%s messages)", cid, len(rows))
             text = await comet.chat(SYSTEM_PROMPT, prompt)
             await bot.send_message(cid, f"🕕 Дневной разбор Порфирия\n\n{text[:3900]}")
         except Exception as e:
+            logger.exception("Daily digest failed for chat %s", cid)
             await bot.send_message(cid, f"Не смог собрать разбор: {e}")
 
 
 async def main():
+    logger.info("Starting Porfiriy bot...")
     scheduler = AsyncIOScheduler(timezone=TZ)
     scheduler.add_job(daily_digest, "cron", hour=18, minute=0)
     scheduler.start()
+    logger.info("Scheduler started (daily digest at 18:00 %s)", TZ)
     await dp.start_polling(bot)
 
 
