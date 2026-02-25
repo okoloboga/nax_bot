@@ -212,9 +212,14 @@ async def private_fallback(message: Message):
 # Ручной веб-поиск
 # ---------------------------------------------------------------------------
 
-@dp.message(Command("find"))
-@dp.message(F.text.regexp(r"^/find(?:@[A-Za-z0-9_]+)?(?:\s+|$)"))
-async def cmd_find(message: Message):
+def _is_find_command(text: str) -> bool:
+    if not text:
+        return False
+    first = text.split(maxsplit=1)[0].lower()
+    return first == "/find" or first.startswith("/find@")
+
+
+async def _handle_find(message: Message):
     logger.info(
         "cmd_find: chat=%s type=%s user=%s text=%r",
         message.chat.id,
@@ -256,6 +261,12 @@ async def cmd_find(message: Message):
         await message.reply(f"Поиск сломался: {e}")
 
 
+@dp.message(Command("find"))
+@dp.message(F.text.regexp(r"^/find(?:@[A-Za-z0-9_]+)?(?:\s+|$)"))
+async def cmd_find(message: Message):
+    await _handle_find(message)
+
+
 # ---------------------------------------------------------------------------
 # Групповой слушатель — /nax и логирование
 # ---------------------------------------------------------------------------
@@ -271,6 +282,10 @@ async def group_listener(message: Message):
     if text:
         user = message.from_user.full_name if message.from_user else "unknown"
         log_message(message.chat.id, user, text)
+
+    if _is_find_command(text):
+        await _handle_find(message)
+        return
 
     is_nax = text.startswith("/nax")
     is_reply_to_bot = (
