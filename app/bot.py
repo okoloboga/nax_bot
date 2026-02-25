@@ -17,10 +17,13 @@ from comet import CometClient
 from config import (
     BOT_TOKEN,
     COMET_API_TOKEN,
+    COMET_MODEL,
     TZ as TZ_NAME,
     ALLOWED_CHAT_IDS,
     BOT_COOLDOWN_SECONDS,
     HUMOR_MODE,
+    WEB_DIGEST_HOUR,
+    WEB_DIGEST_MINUTE,
 )
 
 TZ = ZoneInfo(TZ_NAME)
@@ -36,7 +39,7 @@ logger = logging.getLogger("porfiriy")
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
-comet = CometClient(COMET_API_TOKEN)
+comet = CometClient(COMET_API_TOKEN, model=COMET_MODEL)
 
 MODE_PROMPTS = {
     "soft": "Лёгкий сарказм, больше иронии, меньше жести.",
@@ -206,6 +209,44 @@ async def private_fallback(message: Message):
 
 
 # ---------------------------------------------------------------------------
+# Ручной веб-поиск
+# ---------------------------------------------------------------------------
+
+@dp.message(Command("find"))
+async def cmd_find(message: Message):
+    if message.chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}:
+        if ALLOWED_CHAT_IDS and message.chat.id not in ALLOWED_CHAT_IDS:
+            return
+        if not is_bound(message.chat.id):
+            return
+
+    text = message.text or ""
+    parts = text.split(maxsplit=1)
+    query = parts[1].strip() if len(parts) > 1 else ""
+    if not query and message.reply_to_message:
+        query = (message.reply_to_message.text or message.reply_to_message.caption or "").strip()
+    if not query:
+        await message.reply("Используй: /find <запрос> или реплай на сообщение с /find")
+        return
+
+    prompt = (
+        "Ты Порфирий, циничный, но полезный чат-аналитик. "
+        f"Сделай веб-поиск по запросу: {query}\n\n"
+        "Верни ответ на русском в формате:\n"
+        "1) Короткий итог (2-4 предложения)\n"
+        "2) Что важно сейчас (3-5 пунктов)\n"
+        "3) Источники (3-5 ссылок)\n"
+        "4) Одна короткая безумная шутка в стиле Порфирия"
+    )
+    try:
+        result = await comet.web_search(prompt)
+        await message.reply(result[:4000], disable_web_page_preview=True)
+    except Exception as e:
+        logger.exception("cmd_find failed in chat %s", message.chat.id)
+        await message.reply(f"Поиск сломался: {e}")
+
+
+# ---------------------------------------------------------------------------
 # Групповой слушатель — /nax и логирование
 # ---------------------------------------------------------------------------
 
@@ -309,6 +350,47 @@ async def daily_digest():
 
 
 # ---------------------------------------------------------------------------
+# Веб-дайджест горячих тем в 12:00
+# ---------------------------------------------------------------------------
+
+async def daily_web_themes_digest():
+    chats = load_chats()
+    for cid_str, meta in chats.items():
+        cid = int(cid_str)
+        if ALLOWED_CHAT_IDS and cid not in ALLOWED_CHAT_IDS:
+            continue
+
+        rows = read_last_24h(cid)
+        if not rows:
+            continue
+
+        sample = "\n".join([f"- {r['user']}: {r['text']}" for r in rows[-250:]])
+        prompt = (
+            "Ты Порфирий. У тебя есть лог чата за 24 часа. "
+            "Выдели 3-5 самых горячих тем от пользователей, затем выполни веб-поиск "
+            "по каждой теме и сделай сумасшедший смешной дайджест.\n\n"
+            "Требования к ответу:\n"
+            "- На русском.\n"
+            "- Коротко и ярко.\n"
+            "- Для каждой темы: что обсуждали в чате + что происходит в интернете прямо сейчас.\n"
+            "- В конце: блок источников с 5-8 ссылками.\n"
+            "- Без токсичности по защищённым признакам.\n\n"
+            f"Лог чата за сутки:\n{sample}"
+        )
+        try:
+            logger.info("Web themes digest for chat %s (%s messages)", cid, len(rows))
+            text = await comet.web_search(prompt)
+            await bot.send_message(
+                cid,
+                f"🔥 Горячие темы дня + веб-разнос от Порфирия\n\n{text[:3900]}",
+                disable_web_page_preview=True,
+            )
+        except Exception as e:
+            logger.exception("Web digest failed for chat %s", cid)
+            await bot.send_message(cid, f"Не смог сделать веб-дайджест: {e}")
+
+
+# ---------------------------------------------------------------------------
 # Запуск
 # ---------------------------------------------------------------------------
 
@@ -316,8 +398,15 @@ async def main():
     logger.info("Starting Porfiriy bot...")
     scheduler = AsyncIOScheduler(timezone=TZ)
     scheduler.add_job(daily_digest, "cron", hour=18, minute=0)
+    scheduler.add_job(daily_web_themes_digest, "cron", hour=WEB_DIGEST_HOUR, minute=WEB_DIGEST_MINUTE)
     scheduler.start()
-    logger.info("Scheduler started (daily digest at 18:00 %s)", TZ)
+    logger.info(
+        "Scheduler started (daily digest at 18:00 %s, web digest at %02d:%02d %s)",
+        TZ,
+        WEB_DIGEST_HOUR,
+        WEB_DIGEST_MINUTE,
+        TZ,
+    )
     await dp.start_polling(bot, allowed_updates=["message", "callback_query", "my_chat_member"])
 
 
