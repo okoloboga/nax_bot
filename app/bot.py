@@ -158,14 +158,9 @@ async def bind_by_forward_legacy(message: Message):
         await message.answer("Ошибка при обработке forward (legacy). Смотри логи.")
 
 
-@dp.message(F.chat.type == ChatType.PRIVATE)
+@dp.message(F.chat.type == ChatType.PRIVATE, F.forward_origin)
 async def bind_by_forward_new(message: Message):
     try:
-        text = (message.text or "").strip()
-        if text.startswith("/"):
-            # Let command handlers process private commands.
-            return
-
         origin = getattr(message, "forward_origin", None)
         logger.info(
             "bind_by_forward_new: has_origin=%s origin_type=%s msg_text=%r",
@@ -201,12 +196,8 @@ async def bind_by_forward_new(message: Message):
         await message.answer("Ошибка при обработке forward. Смотри логи.")
 
 
-@dp.message(F.chat.type == ChatType.PRIVATE)
+@dp.message(F.chat.type == ChatType.PRIVATE, ~F.text.regexp(r"^/"))
 async def private_fallback(message: Message):
-    text = (message.text or "").strip()
-    if text.startswith("/"):
-        # Do not swallow commands in private chat.
-        return
     logger.info(
         "private_fallback (unhandled): text=%r has_forward_origin=%s "
         "has_forward_from_chat=%s forward_origin_type=%s",
