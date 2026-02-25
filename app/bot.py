@@ -161,6 +161,11 @@ async def bind_by_forward_legacy(message: Message):
 @dp.message(F.chat.type == ChatType.PRIVATE)
 async def bind_by_forward_new(message: Message):
     try:
+        text = (message.text or "").strip()
+        if text.startswith("/"):
+            # Let command handlers process private commands.
+            return
+
         origin = getattr(message, "forward_origin", None)
         logger.info(
             "bind_by_forward_new: has_origin=%s origin_type=%s msg_text=%r",
@@ -198,6 +203,10 @@ async def bind_by_forward_new(message: Message):
 
 @dp.message(F.chat.type == ChatType.PRIVATE)
 async def private_fallback(message: Message):
+    text = (message.text or "").strip()
+    if text.startswith("/"):
+        # Do not swallow commands in private chat.
+        return
     logger.info(
         "private_fallback (unhandled): text=%r has_forward_origin=%s "
         "has_forward_from_chat=%s forward_origin_type=%s",
@@ -213,11 +222,21 @@ async def private_fallback(message: Message):
 # ---------------------------------------------------------------------------
 
 @dp.message(Command("find"))
+@dp.message(F.text.regexp(r"^/find(?:@[A-Za-z0-9_]+)?(?:\s+|$)"))
 async def cmd_find(message: Message):
+    logger.info(
+        "cmd_find: chat=%s type=%s user=%s text=%r",
+        message.chat.id,
+        message.chat.type,
+        message.from_user.id if message.from_user else "unknown",
+        (message.text or "")[:120],
+    )
     if message.chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}:
         if ALLOWED_CHAT_IDS and message.chat.id not in ALLOWED_CHAT_IDS:
+            await message.reply("Этот чат не в списке разрешённых для /find.")
             return
         if not is_bound(message.chat.id):
+            await message.reply("Сначала привяжи чат: /bind")
             return
 
     text = message.text or ""
