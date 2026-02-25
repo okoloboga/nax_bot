@@ -220,8 +220,9 @@ def _is_find_command(text: str) -> bool:
 
 
 async def _handle_find(message: Message):
+    started_at = datetime.now().timestamp()
     logger.info(
-        "cmd_find: chat=%s type=%s user=%s text=%r",
+        "cmd_find.enter chat=%s type=%s user=%s text=%r",
         message.chat.id,
         message.chat.type,
         message.from_user.id if message.from_user else "unknown",
@@ -229,9 +230,11 @@ async def _handle_find(message: Message):
     )
     if message.chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}:
         if ALLOWED_CHAT_IDS and message.chat.id not in ALLOWED_CHAT_IDS:
+            logger.warning("cmd_find.blocked reason=not_allowed chat=%s", message.chat.id)
             await message.reply("Этот чат не в списке разрешённых для /find.")
             return
         if not is_bound(message.chat.id):
+            logger.warning("cmd_find.blocked reason=not_bound chat=%s", message.chat.id)
             await message.reply("Сначала привяжи чат: /bind")
             return
 
@@ -240,9 +243,12 @@ async def _handle_find(message: Message):
     query = parts[1].strip() if len(parts) > 1 else ""
     if not query and message.reply_to_message:
         query = (message.reply_to_message.text or message.reply_to_message.caption or "").strip()
+        logger.info("cmd_find.query_from_reply chat=%s query=%r", message.chat.id, query[:120])
     if not query:
+        logger.warning("cmd_find.blocked reason=empty_query chat=%s", message.chat.id)
         await message.reply("Используй: /find <запрос> или реплай на сообщение с /find")
         return
+    logger.info("cmd_find.query_ready chat=%s query=%r", message.chat.id, query[:200])
 
     prompt = (
         "Ты Порфирий, циничный, но полезный чат-аналитик. "
@@ -254,10 +260,21 @@ async def _handle_find(message: Message):
         "4) Одна короткая безумная шутка в стиле Порфирия"
     )
     try:
+        logger.info("cmd_find.search_start chat=%s", message.chat.id)
         result = await comet.web_search(prompt)
+        elapsed_ms = int((datetime.now().timestamp() - started_at) * 1000)
+        logger.info(
+            "cmd_find.search_ok chat=%s result_len=%s elapsed_ms=%s",
+            message.chat.id,
+            len(result),
+            elapsed_ms,
+        )
         await message.reply(result[:4000], disable_web_page_preview=True)
+        logger.info("cmd_find.reply_sent chat=%s reply_len=%s", message.chat.id, min(len(result), 4000))
     except Exception as e:
+        elapsed_ms = int((datetime.now().timestamp() - started_at) * 1000)
         logger.exception("cmd_find failed in chat %s", message.chat.id)
+        logger.error("cmd_find.search_fail chat=%s elapsed_ms=%s error=%r", message.chat.id, elapsed_ms, e)
         await message.reply(f"Поиск сломался: {e}")
 
 
